@@ -1,11 +1,7 @@
 package com.alibaba.druid.pool;
 
 import org.elasticsearch.client.Client;
-import org.elasticsearch.client.transport.TransportClient;
-import org.elasticsearch.plugin.deletebyquery.DeleteByQueryPlugin;
 import org.elasticsearch.plugin.nlpcn.QueryActionElasticExecutor;
-import org.elasticsearch.plugin.nlpcn.executors.CSVResult;
-import org.elasticsearch.plugin.nlpcn.executors.CSVResultsExtractor;
 import org.elasticsearch.plugin.nlpcn.executors.CsvExtractorException;
 import org.nlpcn.es4sql.SearchDao;
 import org.nlpcn.es4sql.exception.SqlParseException;
@@ -23,8 +19,7 @@ import java.util.List;
  */
 public class ElasticSearchDruidPooledPreparedStatement extends DruidPooledPreparedStatement {
 
-
-    Client client = null;
+    private final Client client;
 
     public ElasticSearchDruidPooledPreparedStatement(DruidPooledConnection conn, PreparedStatementHolder holder) throws SQLException {
         super(conn, holder);
@@ -35,44 +30,67 @@ public class ElasticSearchDruidPooledPreparedStatement extends DruidPooledPrepar
     public ResultSet executeQuery() throws SQLException {
         checkOpen();
 
-        incrementExecuteCount();
+        incrementExecuteQueryCount();
         transactionRecord(getSql());
 
         oracleSetRowPrefetch();
 
         conn.beforeExecute();
         try {
-
-
-            ObjectResult extractor = getObjectResult(true, getSql(), false, false, true);
+            ObjectResult extractor = getObjectResult(true, false, false, true);
             List<String> headers = extractor.getHeaders();
             List<List<Object>> lines = extractor.getLines();
 
             ResultSet rs = new ElasticSearchResultSet(this, headers, lines);
-
-            if (rs == null) {
-                return null;
-            }
 
             DruidPooledResultSet poolableResultSet = new DruidPooledResultSet(this, rs);
             addResultSetTrace(poolableResultSet);
 
             return poolableResultSet;
         } catch (Throwable t) {
+            errorCheck(t);
+
             throw checkException(t);
         } finally {
             conn.afterExecute();
         }
     }
 
-    private ObjectResult getObjectResult(boolean flat, String query, boolean includeScore, boolean includeType, boolean includeId) throws SqlParseException, SQLFeatureNotSupportedException, Exception, CsvExtractorException {
+    @Override
+    public boolean execute() throws SQLException {
+        checkOpen();
+
+        incrementExecuteCount();
+        transactionRecord(getSql());
+
+        // oracleSetRowPrefetch();
+
+        conn.beforeExecute();
+        try {
+            ObjectResult extractor = getObjectResult(true, false, false, true);
+            List<String> headers = extractor.getHeaders();
+            List<List<Object>> lines = extractor.getLines();
+
+            ResultSet rs = new ElasticSearchResultSet(this, headers, lines);
+            ((ElasticSearchPreparedStatement) getRawPreparedStatement()).setResults(rs);
+
+            return true;
+        } catch (Throwable t) {
+            errorCheck(t);
+
+            throw checkException(t);
+        } finally {
+            conn.afterExecute();
+        }
+    }
+
+    private ObjectResult getObjectResult(boolean flat, boolean includeScore, boolean includeType, boolean includeId) throws SqlParseException, SQLFeatureNotSupportedException, Exception, CsvExtractorException {
         SearchDao searchDao = new org.nlpcn.es4sql.SearchDao(client);
 
-        //String rewriteSQL = searchDao.explain(getSql()).explain().explain();
-
+        String query = ((ElasticSearchPreparedStatement) getRawPreparedStatement()).getExecutableSql();
         QueryAction queryAction = searchDao.explain(query);
         Object execution = QueryActionElasticExecutor.executeAnyAction(searchDao.getClient(), queryAction);
-        return new ObjectResultsExtractor(includeScore, includeType, includeId).extractResults(execution, flat);
+        return new ObjectResultsExtractor(includeScore, includeType, includeId, false, queryAction).extractResults(execution, flat);
     }
 
     @Override

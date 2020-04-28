@@ -1,21 +1,29 @@
 package org.nlpcn.es4sql.jdbc;
 
+import org.elasticsearch.action.search.SearchResponse;
+import org.elasticsearch.common.document.DocumentField;
 import org.elasticsearch.search.SearchHit;
-import org.elasticsearch.search.SearchHitField;
 import org.elasticsearch.search.SearchHits;
 import org.elasticsearch.search.aggregations.Aggregation;
 import org.elasticsearch.search.aggregations.Aggregations;
 import org.elasticsearch.search.aggregations.bucket.MultiBucketsAggregation;
 import org.elasticsearch.search.aggregations.bucket.SingleBucketAggregation;
+import org.elasticsearch.search.aggregations.metrics.ExtendedStats;
+import org.elasticsearch.search.aggregations.metrics.GeoBounds;
 import org.elasticsearch.search.aggregations.metrics.NumericMetricsAggregation;
-import org.elasticsearch.search.aggregations.metrics.geobounds.GeoBounds;
-import org.elasticsearch.search.aggregations.metrics.percentiles.Percentiles;
-import org.elasticsearch.search.aggregations.metrics.stats.Stats;
-import org.elasticsearch.search.aggregations.metrics.stats.extended.ExtendedStats;
-import org.elasticsearch.search.aggregations.metrics.tophits.TopHits;
+import org.elasticsearch.search.aggregations.metrics.Percentiles;
+import org.elasticsearch.search.aggregations.metrics.Stats;
+import org.elasticsearch.search.aggregations.metrics.TopHits;
 import org.nlpcn.es4sql.Util;
+import org.nlpcn.es4sql.query.DefaultQueryAction;
+import org.nlpcn.es4sql.query.QueryAction;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Created by allwefantasy on 8/30/16.
@@ -24,20 +32,24 @@ public class ObjectResultsExtractor {
     private final boolean includeType;
     private final boolean includeScore;
     private final boolean includeId;
+    private final boolean includeScrollId;
     private int currentLineIndex;
+    private QueryAction queryAction;
 
-    public ObjectResultsExtractor(boolean includeScore, boolean includeType, boolean includeId) {
+    public ObjectResultsExtractor(boolean includeScore, boolean includeType, boolean includeId, boolean includeScrollId, QueryAction queryAction) {
         this.includeScore = includeScore;
         this.includeType = includeType;
         this.includeId = includeId;
+        this.includeScrollId = includeScrollId;
         this.currentLineIndex = 0;
+        this.queryAction = queryAction;
     }
 
     public ObjectResult extractResults(Object queryResult, boolean flat) throws ObjectResultsExtractException {
         if (queryResult instanceof SearchHits) {
             SearchHit[] hits = ((SearchHits) queryResult).getHits();
             List<Map<String, Object>> docsAsMap = new ArrayList<>();
-            List<String> headers = createHeadersAndFillDocsMap(flat, hits, docsAsMap);
+            List<String> headers = createHeadersAndFillDocsMap(flat, hits, null, docsAsMap);
             List<List<Object>> lines = createLinesFromDocs(flat, docsAsMap, headers);
             return new ObjectResult(headers, lines);
         }
@@ -57,6 +69,13 @@ public class ObjectResultsExtractor {
 
             return new ObjectResult(headers, lines);
 
+        }
+        if (queryResult instanceof SearchResponse) {
+            SearchHit[] hits = ((SearchResponse) queryResult).getHits().getHits();
+            List<Map<String, Object>> docsAsMap = new ArrayList<>();
+            List<String> headers = createHeadersAndFillDocsMap(flat, hits, ((SearchResponse) queryResult).getScrollId(), docsAsMap);
+            List<List<Object>> lines = createLinesFromDocs(flat, docsAsMap, headers);
+            return new ObjectResult(headers, lines);
         }
         return null;
     }
@@ -243,37 +262,43 @@ public class ObjectResultsExtractor {
         return objectLines;
     }
 
-    private List<String> createHeadersAndFillDocsMap(boolean flat, SearchHit[] hits, List<Map<String, Object>> docsAsMap) {
-        Set<String> csvHeaders = new HashSet<>();
+    private List<String> createHeadersAndFillDocsMap(boolean flat, SearchHit[] hits, String scrollId, List<Map<String, Object>> docsAsMap) {
+        Set<String> headers = new LinkedHashSet<>();
+        List<String> fieldNames = new ArrayList<>();
+        if (this.queryAction instanceof DefaultQueryAction) {
+            fieldNames.addAll(((DefaultQueryAction) this.queryAction).getFieldNames());
+        }
+        boolean hasScrollId = this.includeScrollId || fieldNames.contains("_scroll_id");
         for (SearchHit hit : hits) {
-            Map<String, Object> doc = hit.sourceAsMap();
-            Map<String, SearchHitField> fields = hit.getFields();
-            for (SearchHitField searchHitField : fields.values()) {
-                doc.put(searchHitField.getName(), searchHitField.value());
+            Map<String, Object> doc = hit.getSourceAsMap();
+            Map<String, DocumentField> fields = hit.getFields();
+            for (DocumentField searchHitField : fields.values()) {
+                doc.put(searchHitField.getName(), searchHitField.getValue());
             }
-            mergeHeaders(csvHeaders, doc, flat);
             if (this.includeScore) {
-                doc.put("_score", hit.score());
+                doc.put("_score", hit.getScore());
             }
             if (this.includeType) {
-                doc.put("_type", hit.type());
+                doc.put("_type", hit.getType());
             }
             if (this.includeId) {
-                doc.put("_id", hit.id());
+                doc.put("_id", hit.getId());
             }
+            if (hasScrollId) {
+                doc.put("_scroll_id", scrollId);
+            }
+            mergeHeaders(headers, doc, flat);
             docsAsMap.add(doc);
         }
-        ArrayList<String> headersList = new ArrayList<>(csvHeaders);
-        if (this.includeScore) {
-            headersList.add("_score");
+        List<String> list = new ArrayList<>(headers);
+        if (!fieldNames.isEmpty()) {
+            list.sort((o1, o2) -> {
+                int i1 = fieldNames.indexOf(o1);
+                int i2 = fieldNames.indexOf(o2);
+                return Integer.compare(i1 < 0 ? Integer.MAX_VALUE : i1, i2 < 0 ? Integer.MAX_VALUE : i2);
+            });
         }
-        if (this.includeType) {
-            headersList.add("_type");
-        }
-        if (this.includeId) {
-            headersList.add("_id");
-        }
-        return headersList;
+        return list;
     }
 
     private Object findFieldValue(String header, Map<String, Object> doc, boolean flat) {

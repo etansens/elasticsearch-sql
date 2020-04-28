@@ -1,5 +1,25 @@
+// settings
+var settings = location.search.substring(1).split("&").reduce(function (r, p) {
+    r[decodeURIComponent(p.split("=")[0])] = decodeURIComponent(p.split("=")[1]);
+    return r;
+}, {});
 
 var elasticsearchSqlApp = angular.module('elasticsearchSqlApp', ["ngAnimate", "ngSanitize"]);
+
+// auth
+if (settings['username']) localStorage.setItem("auth", "Basic " + window.btoa(settings['username'] + ":" + settings['password']));
+if (localStorage.getItem("auth")) {
+    elasticsearchSqlApp.config(function ($httpProvider) {
+        $httpProvider.interceptors.push(function () {
+            return {
+                request: function (config) {
+                    config.headers['Authorization'] = localStorage.getItem("auth");
+                    return config;
+                }
+            };
+        });
+    });
+}
 
 elasticsearchSqlApp.controller('MainController', function ($scope, $http, $sce,$compile) {
 	scroll_url = "_search/scroll?scroll=1m&scroll_id=";
@@ -109,7 +129,7 @@ $scope.fetchAll = function(){
         })
         .error(function(data, status, headers, config) {
           if(data == "") {
-            $scope.error = "Error occured! response is not avalible.";
+            $scope.error = "Error occured! response is not available.";
     	  }
     	  else {
     	  	$scope.error = JSON.stringify(data);
@@ -160,8 +180,9 @@ function updateWithScrollIfNeeded (query) {
     if(selectedQuery != "" && selectedQuery != undefined){
       query = selectedQuery;
     }
+
     query = updateWithScrollIfNeeded(query);
-		$http.post($scope.url + "_sql", query)
+		$http.post($scope.url + "_nlpcn/sql", query)
 		.success(function(data, status, headers, config) {
           var handler = ResultHandlerFactory.create(data,$scope.config.isFlat,$scope.config.showScore,$scope.config.showType,$scope.config.showId);
           updateDescription(handler);
@@ -197,7 +218,7 @@ function updateWithScrollIfNeeded (query) {
         })
         .error(function(data, status, headers, config) {
           if(data == "") {
-            $scope.error = "Error occured! response is not avalible.";
+            $scope.error = "Error occured! response is not available.";
     	  }
     	  else {
     	  	$scope.error = JSON.stringify(data);
@@ -228,7 +249,7 @@ function updateWithScrollIfNeeded (query) {
 		saveUrl()
 
         var query = window.editor.getValue();
-		$http.post($scope.url + "_sql/_explain", query)
+		$http.post($scope.url + "_nlpcn/sql/explain", query)
 		.success(function(data, status, headers, config) {
 					 $scope.resultExplan = true;
 				   window.explanResult.setValue(JSON.stringify(data, null, "\t"));
@@ -236,7 +257,7 @@ function updateWithScrollIfNeeded (query) {
         .error(function(data, status, headers, config) {
         	$scope.resultExplan = false;
           if(data == "") {
-            $scope.error = "Error occured! response is not avalible.";
+            $scope.error = "Error occured! response is not available.";
     	  }
     	  else {
     	  	$scope.error = JSON.stringify(data);
@@ -330,7 +351,7 @@ function updateWithScrollIfNeeded (query) {
         })
         .error(function(data, status, headers, config) {
           if(data == "") {
-            $scope.error = "Error occured! response is not avalible.";
+            $scope.error = "Error occured! response is not available.";
         }
         else {
           $scope.error = JSON.stringify(data);
@@ -381,15 +402,19 @@ function updateWithScrollIfNeeded (query) {
 
 
 	function getUrl() {
-		var url = localStorage.getItem("lasturl");
+        var url = settings['base_uri'] || localStorage.getItem("lasturl");
 		if(url == undefined) {
-			if(location.protocol == "file") {
+            if (location.protocol == "file") {
 				url = "http://localhost:9200"
 			}
 			else {
 				url = location.protocol+'//' + location.hostname + (location.port ? ':'+location.port : '');
 			}
 		}
+
+        if (url.indexOf('http://') !== 0 && url.indexOf('https://') !== 0) {
+            url = 'http://' + url;
+        }
 
 		if(url.substr(url.length - 1, 1) != '/') {
 			url += '/'
